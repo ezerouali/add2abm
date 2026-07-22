@@ -1,64 +1,65 @@
 #!/bin/bash
 
-# Add2ABM
+# Add2ABM — revised
+# Usage: bash <(curl -s add2abm.inetum.zone)
+REVISION=20260722
 
-# Copyright 2026 Inetum Polska Sp. z o.o.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+shopt -s nullglob
 
-# Author: Bartłomiej Sojka
-# Revision: 20260706
-REVISION=20260706
-
-# Usage: sh <(curl -s add2abm.inetum.zone)
-#        sh <(curl -s script_hosting_fqdn/add2abm)
-
-# CONFIRMATION: ————————————————————————————————————————————————————————————————————————————————————
-
-printf 'Add2ABM script by Inetum Polska Sp. z o.o.\nRevision: %s\nWould you like to run it now? (y/n): ' ${REVISION}
+printf 'Add2ABM script — Revision: %s\nWould you like to run it now? (y/n): ' "${REVISION}"
 read -r ANSWER
-case "${ANSWER}" in
-	[Yy]*)
-		unset ANSWER
-		;;
-	*) exit 0 ;;
-esac
+case "${ANSWER}" in [Yy]*) ;; *) exit 0 ;; esac
 
-# PREREQUISITES: ———————————————————————————————————————————————————————————————————————————————————
+# SAFETY / ENVIRONMENT: ————————————————————————————————————————————————————————
 
-# Check for Find My Mac (FMM) Token in NVRAM:
-if nvram -p | grep -q "fmm-mobileme-token-proxy"; then
-	printf '\n[!] WARNING: Find My Mac is currently ACTIVE on this device.\n'
-	printf '             Please disable Find My Mac in System Settings before running this script.\n'
+if [[ ${EUID} -ne 0 ]]; then
+	printf '\n[!] This script must run as root (Recovery shell). Terminating…\n'
 	exit 1
 fi
 
-BASE="/Volumes/Macintosh HD"
-XMLLINT="${BASE}/usr/bin/xmllint"
-MMA_PLIST="Library/Preferences/MobileMeAccounts.plist"
+# Detect the target system volume dynamically. On a normally booted Mac,
+# /Volumes/<name> is a symlink to / — skipping symlinks doubles as a
+# "don't run on a live system" guard.
+BASE=""
+for VOL in /Volumes/*; do
+	[[ -L "${VOL}" ]] && continue
+	[[ -f "${VOL}/System/Library/CoreServices/SystemVersion.plist" ]] || continue
+	BASE="${VOL}"
+	break
+done
 
-DB_PATH="/Volumes/Macintosh HD/var/db"
+if [[ -z "${BASE}" ]]; then
+	printf '\n[!] No target macOS system volume found under /Volumes.\n'
+	printf '    Boot into Recovery and run this script from there. Terminating…\n'
+	exit 1
+fi
+printf '\n[*] Target system volume: "%s"\n' "$(basename "${BASE}")"
+
+# Check for Find My Mac (FMM) token in NVRAM:
+if nvram -p | grep -q "fmm-mobileme-token-proxy"; then
+	printf '\n[!] WARNING: Find My Mac is currently ACTIVE on this device.\n'
+	printf '             Please disable Find My Mac before running this script.\n'
+	exit 1
+fi
+
+MMA_PLIST="Library/Preferences/MobileMeAccounts.plist"
+DB_PATH="${BASE}/var/db"
 ASD_FILE="${DB_PATH}/.AppleSetupDone"
 TOS_FILE="${DB_PATH}/.AppleSetupTermsOfService"
 USERS_PATH="${DB_PATH}/dslocal/nodes/Default/users"
-DATA_VOLUME="Macintosh HD - Data"
+MARKER_FILE="${DB_PATH}/.add2abmInProgress"
 
-# MOUNTING: ————————————————————————————————————————————————————————————————————————————————————————
+# MOUNTING: ————————————————————————————————————————————————————————————————————
 
-! grep -q "${DATA_VOLUME}" <<<"$(diskutil list)" && DATA_VOLUME="Data"
+DATA_VOLUME="$(basename "${BASE}") - Data"
+diskutil list | grep -q "${DATA_VOLUME}" || DATA_VOLUME="Data"
+
 if ! diskutil mount "${DATA_VOLUME}" &>/dev/null; then
-	printf '\nPlease, provide SecureToken–enabled user password or a FileVault Personal Recovery Key to unlock Data volume…\n'
-	diskutil apfs unlockVolume "${DATA_VOLUME}"
+	printf '\nProvide a SecureToken-enabled user password or a FileVault PRK to unlock "%s"…\n' "${DATA_VOLUME}"
+	for _ in 1 2 3; do
+		diskutil apfs unlockVolume "${DATA_VOLUME}" && break
+		printf 'Unlock failed, try again…\n'
+	done
 fi
 
 if [[ ! -d "${USERS_PATH}" ]]; then
@@ -66,13 +67,16 @@ if [[ ! -d "${USERS_PATH}" ]]; then
 	exit 2
 fi
 
-# RESTORE: —————————————————————————————————————————————————————————————————————————————————————————
+# RESTORE: —————————————————————————————————————————————————————————————————————
 
-# Check for any .bak files:
-if ls "${USERS_PATH}"/*.bak &>/dev/null; then
-	printf '\n[*] Found .bak files. Restoring…\n'
-	for BACKUP_FILE in "${USERS_PATH}"/*.bak; do
-		[ -e "${BACKUP_FILE}" ] || continue
+BAK_FILES=("${USERS_PATH}"/*.bak)
+if [[ -f "${MARKER_FILE}" || ${#BAK_FILES[@]} -gt 0 ]]; then
+	printf '\n[*] Previous Add2ABM run detected (%s backup file(s)).\n' "${#BAK_FILES[@]}"
+	printf '    Restore users and Setup Assistant state now? (y/n): '
+	read -r ANSWER
+	case "${ANSWER}" in [Yy]*) ;; *) exit 0 ;; esac
+
+	for BACKUP_FILE in "${BAK_FILES[@]}"; do
 		mv -v "${BACKUP_FILE}" "${BACKUP_FILE%.bak}.plist"
 	done
 
@@ -80,98 +84,80 @@ if ls "${USERS_PATH}"/*.bak &>/dev/null; then
 	touch "${ASD_FILE}"
 	chmod 400 "${ASD_FILE}"
 
-	[[ -f "${TOS_FILE}" ]] && rm -f "${TOS_FILE}" && printf "[*] Re–confirming the user’s acceptance of the macOS Software License Agreement…\n"
+	[[ -f "${TOS_FILE}" ]] && rm -f "${TOS_FILE}" && printf "[*] Re-confirming the user's acceptance of the macOS SLA…\n"
+
+	rm -f "${MARKER_FILE}"
 
 	printf '\nWould you like to restart to macOS now? (y/n): '
 	read -r ANSWER
-	case "${ANSWER}" in
-		[Yy]*)
-			printf 'Performing restart…'
-			sleep 0.5
-			reboot
-			;;
-	esac
-
+	case "${ANSWER}" in [Yy]*) sleep 0.5; reboot ;; esac
 	exit 0
 fi
 
-# DATA LOSS PREVENTION: ————————————————————————————————————————————————————————————————————————————
+# DATA LOSS PREVENTION: ————————————————————————————————————————————————————————
 
+# Check FMM state in EVERY iCloud account of every user (pure plutil, no xmllint):
 for USER_HOME in "${BASE}/Users"/*; do
-	USER="$(basename "${USER_HOME}")"
-	[[ "${USER}" == "Shared" ]] && continue
-
+	USERNAME="$(basename "${USER_HOME}")"
+	[[ "${USERNAME}" == "Shared" ]] && continue
 	MMA_PLIST_PATH="${USER_HOME}/${MMA_PLIST}"
 	[[ -f "${MMA_PLIST_PATH}" ]] || continue
 
-	STATUS=$(
-		plutil -extract Accounts.0.Services xml1 -o - "${MMA_PLIST_PATH}" 2>/dev/null |
-			"${XMLLINT}" --xpath 'name(//dict[string[preceding-sibling::key[1]="Name"]="FIND_MY_MAC"]/*[preceding-sibling::key[1]="Enabled"][1])' - 2>/dev/null
-	)
-
-	if [[ "${STATUS}" == "true" ]]; then
-		printf '\n[!] WARNING: Find My Mac is currently ENABLED for user "%s".\n' "${USER}"
-		printf '             Operation aborted to prevent ABM/ASM assignment failure and data loss.\n'
-		printf '             Please disable Find My Mac in System Settings before running this script.\n'
-		exit 3
-	fi
+	A=0
+	while plutil -extract "Accounts.${A}" xml1 -o /dev/null "${MMA_PLIST_PATH}" &>/dev/null; do
+		S=0
+		while SVC_NAME=$(plutil -extract "Accounts.${A}.Services.${S}.Name" raw "${MMA_PLIST_PATH}" 2>/dev/null); do
+			if [[ "${SVC_NAME}" == "FIND_MY_MAC" ]]; then
+				ENABLED=$(plutil -extract "Accounts.${A}.Services.${S}.Enabled" raw "${MMA_PLIST_PATH}" 2>/dev/null)
+				if [[ "${ENABLED}" == "true" ]]; then
+					printf '\n[!] WARNING: Find My Mac is ENABLED for user "%s".\n' "${USERNAME}"
+					printf '             Operation aborted to prevent ABM/ASM assignment failure and data loss.\n'
+					exit 3
+				fi
+			fi
+			((S++))
+		done
+		((A++))
+	done
 done
 
 if [[ -f "${DB_PATH}/ConfigurationProfiles/Settings/.cloudConfigRecordFound" ]]; then
-	printf '\n[!] WARNING: Cloud config record was found. This Mac may already be assigned.\n'
-	printf '             Operation aborted to prevent ABM/ASM assignment failure and data loss.\n'
+	printf '\n[!] WARNING: Cloud config record found. This Mac may already be assigned. Aborting.\n'
 	exit 4
 fi
 
 if [[ -f "${DB_PATH}/ConfigurationProfiles/Settings/.cloudConfigHasActivationRecord" ]]; then
-	printf '\n[!] WARNING: Cloud config activation record flag was found. This Mac may already be assigned.\n'
-	printf '             Please verify it in any of your ABM/ASM instances before proceeding.\n'
+	printf '\n[!] WARNING: Activation record flag found. Verify your ABM/ASM instances before proceeding.\n'
 fi
 
 printf '\n[*] Find My Mac does not appear to be enabled for any user.\n'
-printf '    IMPORTANT: Remember not to use Shut Down button in case of any assignment failure (Cmd+Q is fine)!\n'
+printf '    IMPORTANT: Do not use Shut Down on assignment failure (Cmd+Q is fine)!\n'
 printf '    Would you like to proceed? (y/n): '
 read -r ANSWER
-case "${ANSWER}" in
-	[Yy]*)
-		unset ANSWER
-		;;
-	*) exit 0 ;;
-esac
+case "${ANSWER}" in [Yy]*) ;; *) exit 0 ;; esac
 
-# BACKUP: ——————————————————————————————————————————————————————————————————————————————————————————
+# BACKUP: ——————————————————————————————————————————————————————————————————————
 
-# No .bak files found — backup eligible .plist files:
-printf "\n[*] No .bak files found. Backing up local users’ .plist files…\n"
+touch "${MARKER_FILE}"   # ensures restore mode triggers even if interrupted below
 
+printf "\n[*] Backing up local users' .plist files…\n"
+BACKUP_COUNT=0
 for USER_FILE in "${USERS_PATH}"/*.plist; do
-	# Extract the first UID from the plist:
 	USER_UID=$(plutil -extract uid.0 raw "${USER_FILE}" 2>/dev/null)
-
-	# Skip if no UID was found or it's not a number:
-	[[ -z "${USER_UID}" || ! "${USER_UID}" =~ ^[0-9]+$ ]] && continue
-
-	# Check if UID is greater than 500:
+	[[ "${USER_UID}" =~ ^[0-9]+$ ]] || continue
 	if ((USER_UID > 500)); then
 		printf 'Backing up "%s" (UID: %s)…\n' "$(basename "${USER_FILE%.plist}")" "${USER_UID}"
 		mv -v "${USER_FILE}" "${USER_FILE%.plist}.bak"
-		# place your action here if needed
+		((BACKUP_COUNT++))
 	fi
 done
+printf '[*] %s user(s) backed up.\n' "${BACKUP_COUNT}"
 
 printf '\n[*] Removing AppleSetupDone…\n'
 rm -f "${ASD_FILE}"
 
-printf '\n[✓] Backup complete. macOS Setup Assistant will now open upon drive unlock.\n'
-
+printf '\n[✓] Done. macOS Setup Assistant will open upon next boot/unlock.\n'
 printf '\nWould you like to restart to macOS now? (y/n): '
 read -r ANSWER
-case "${ANSWER}" in
-	[Yy]*)
-		printf 'Performing restart…'
-		sleep 0.5
-		reboot
-		;;
-esac
-
+case "${ANSWER}" in [Yy]*) sleep 0.5; reboot ;; esac
 exit 0
