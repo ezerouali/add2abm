@@ -9,6 +9,13 @@ fail_fast: true
 repos:
   - repo: local
     hooks:
+      - id: sync-index-html
+        name: Sync index.html with add2abm.sh
+        entry: bash -c 'cp add2abm.sh index.html && git add index.html'
+        language: system
+        files: ^add2abm\.sh$
+        stages: ["pre-commit"]
+
       - id: trufflehog
         name: Check TruffleHog
         entry: bash -c 'trufflehog git file://. --since-commit HEAD --only-verified --fail --no-update'

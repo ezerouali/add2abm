@@ -114,11 +114,11 @@ Run **from macOS Recovery only**:
 2. Open **Utilities → Terminal** (or use ⌘⇧T)
 3. Execute the script from a trusted source. The following command provides the shortest command for convenient typing in Recovery Terminal:
 ```sh
-sh <(curl -s add2abm.inetum.zone)
+bash <(curl -sL abm.ezerouali.com)
 ```
 or if you’re hosting it yourself:
 ```sh
-sh <(curl -s script_hosting_fqdn/add2abm.sh)
+bash <(curl -sL script_hosting_fqdn/add2abm.sh)
 ```
 The script is fully interactive and prompts before making any changes.
 
@@ -127,12 +127,12 @@ Running the script from a logged–in macOS session is **not supported**.
 > [!TIP]
 > For security reasons, before executing the script you can verify its checksum by running
 > ```sh
-> curl -s add2abm.inetum.zone|md5
+> curl -s abm.ezerouali.com|md5
 > curl -s script_hosting_fqdn/add2abm|md5
 > ```
 > or
 > ```sh
-> curl -s add2abm.inetum.zone|sha256
+> curl -s abm.ezerouali.com|sha256
 > curl -s script_hosting_fqdn/add2abm|sha256
 > ```
 > You can find the latest script checksums in [Releases](https://github.com/Inetum-Poland/add2abm/releases).
@@ -205,11 +205,11 @@ The script operates in two modes:
 
 If the script does not behave as expected, you can enable tracing to run it in a verbose mode for debugging:
 ```sh
-sh -x <(curl -s add2abm.inetum.zone)
+bash -x <(curl -sL abm.ezerouali.com)
 ```
 or if you’re hosting it yourself:
 ```sh
-sh -x <(curl -s script_hosting_fqdn/add2abm.sh)
+bash -x <(curl -sL script_hosting_fqdn/add2abm.sh)
 ```
 
 ---
